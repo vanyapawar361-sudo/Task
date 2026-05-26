@@ -4,8 +4,9 @@
 
 [functions]
   node_bundler = "esbuild"
+  external_node_modules = ["mongoose"]
 
 [[redirects]]
   from = "/*"
-  to = "/.netlify/functions/index"
+  to = "/.netlify/functions/taskflow"
   status = 200
