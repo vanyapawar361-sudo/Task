@@ -1,3 +1,11 @@
+/**
+ * TaskFlow Intelligent Backend
+ * ----------------------------
+ * This server handles task management with a dynamic priority calculation.
+ * The priority score is computed on-the-fly to ensure it always reflects
+ * the current time relative to the due date.
+ */
+
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -7,25 +15,31 @@ const Task = require('./models/Task');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
+// Standard middleware for API security and parsing
 app.use(cors());
 app.use(express.json());
 
-// Database Connection
+// Establish connection to MongoDB instance
+// Note: Ensure MONGODB_URI is set in your .env file
 mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('Connected to MongoDB'))
-  .catch(err => console.error('MongoDB connection error:', err));
+  .then(() => console.log('Successfully connected to MongoDB infrastructure'))
+  .catch(err => console.error('CRITICAL: MongoDB connection failed ->', err));
 
 // Routes
 const bfhlRouter = express.Router();
 
-// Helper to get priority score logic for aggregation
+/**
+ * Generates the MongoDB Aggregation expression for the priority score.
+ * Formula: (importance * 10) + (100 / max(daysUntilDue, 1))
+ * 
+ * We use $floor to count full days and $max to prevent division by zero.
+ */
 const getPriorityScoreAggregation = () => {
   const now = new Date();
   return {
     $cond: {
       if: { $eq: ["$status", "completed"] },
-      then: 0,
+      then: 0, // Completed tasks naturally lose priority
       else: {
         $add: [
           { $multiply: ["$importance", 10] },
@@ -38,11 +52,11 @@ const getPriorityScoreAggregation = () => {
                     $floor: {
                       $divide: [
                         { $subtract: ["$dueDate", now] },
-                        1000 * 60 * 60 * 24
+                        1000 * 60 * 60 * 24 // Convert ms difference to days
                       ]
                     }
                   },
-                  1
+                  1 // Minimum 1 day to handle same-day or overdue logic safely
                 ]
               }
             ]

@@ -1,39 +1,45 @@
 const mongoose = require('mongoose');
 
+/**
+ * Task Schema Definition
+ * ----------------------
+ * Defines the structure for tasks in TaskFlow.
+ * Includes virtuals for 'priorityScore' which is calculated at runtime.
+ */
 const taskSchema = new mongoose.Schema({
   title: {
     type: String,
-    required: [true, 'Title is required'],
+    required: [true, 'Please provide a descriptive title'],
     trim: true,
-    minlength: [3, 'Title must be between 3 and 100 characters'],
-    maxlength: [100, 'Title must be between 3 and 100 characters']
+    minlength: [3, 'Title is too short (min 3 chars)'],
+    maxlength: [100, 'Title is too long (max 100 chars)']
   },
   description: {
     type: String,
-    maxlength: [500, 'Description cannot exceed 500 characters']
+    maxlength: [500, 'Detailed description must be under 500 characters']
   },
   importance: {
     type: Number,
-    required: [true, 'Importance is required'],
-    min: [1, 'Importance must be between 1 and 5'],
-    max: [5, 'Importance must be between 1 and 5'],
+    required: [true, 'Scale of importance (1-5) is required'],
+    min: [1, 'Scale starts at 1'],
+    max: [5, 'Scale ends at 5'],
     validate: {
       validator: Number.isInteger,
-      message: 'Importance must be an integer'
+      message: 'Importance must be a whole number'
     }
   },
   dueDate: {
     type: Date,
-    required: [true, 'Due date is required'],
+    required: [true, 'A deadline is mandatory'],
     validate: {
       validator: function(value) {
-        // Only enforce future date on creation
+        // Validation logic for ensuring future dates on creation
         if (this.isNew) {
           return value > new Date();
         }
         return true;
       },
-      message: 'Due date must be in the future'
+      message: 'Deadlines must be set in the future'
     }
   },
   status: {
@@ -47,9 +53,16 @@ const taskSchema = new mongoose.Schema({
   }
 }, {
   toJSON: { virtuals: true },
-  toObject: { virtuals: true }
+  toObject: { virtuals: true },
+  timestamps: false // We handle createdAt manually, but could use timestamps: true
 });
 
+/**
+ * Virtual: priorityScore
+ * ----------------------
+ * Dynamic field returned in API responses.
+ * Not persisted in the database to ensure accuracy against the current time.
+ */
 taskSchema.virtual('priorityScore').get(function() {
   if (this.status === 'completed') {
     return 0;

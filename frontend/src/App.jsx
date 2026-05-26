@@ -17,6 +17,8 @@ function App() {
     minImportance: 1
   });
 
+  // Core data fetching logic
+  // Synchronizes task list and dashboard statistics simultaneously
   const fetchData = async () => {
     try {
       setLoading(true);
@@ -28,8 +30,8 @@ function App() {
       setStats(statsRes.data);
       setError(null);
     } catch (err) {
-      console.error(err);
-      setError('Failed to connect to the server. Please ensure the backend is running.');
+      console.error('System synchronization error:', err);
+      setError('Connection to the TaskFlow engine failed. Is the backend server online?');
     } finally {
       setLoading(false);
     }
@@ -39,12 +41,12 @@ function App() {
     fetchData();
   }, [filters]);
 
+  // Handlers for task lifecycle management
   const handleCreateTask = async (taskData) => {
     setFormLoading(true);
     try {
-      const res = await createTask(taskData);
-      // Optimistically add to list or just re-fetch to get correct priority score and sorting
-      // Re-fetching is safer because priority score depends on server's "now" time
+      await createTask(taskData);
+      // Trigger a structural refresh to update priority scores based on current time
       await fetchData();
     } catch (err) {
       throw err;
