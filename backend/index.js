@@ -1,261 +1,125 @@
 /**
- * TaskFlow Intelligent Backend
- * ----------------------------
- * This server handles task management with a dynamic priority calculation.
- * The priority score is computed on-the-fly to ensure it always reflects
- * the current time relative to the due date.
+ * TaskFlow Intelligent Backend (Supabase Version)
+ * ---------------------------------------------
+ * This version uses Supabase (PostgreSQL) for maximum reliability
+ * and zero-configuration setup for the user.
  */
 
 require('dotenv').config();
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
-const Task = require('./models/Task');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Standard middleware for API security and parsing
+// Supabase Configuration
+const supabaseUrl = 'https://crsujmshdirlltzjssxx.supabase.co';
+const supabaseKey = process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNyc3VqbXNoZGlybGx0empzc3h4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3NjUyNzcsImV4cCI6MjA5NTM0MTI3N30.FwupLOg2nN36hYFWNWOc4ESQEjNswxO0Mh5f7boN3Lc';
+const supabase = createClient(supabaseUrl, supabaseKey);
+
 app.use(cors());
 app.use(express.json());
 
-// Establish connection to MongoDB instance
-// Note: Ensure MONGODB_URI is set in your .env file
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('Successfully connected to MongoDB infrastructure'))
-  .catch(err => console.error('CRITICAL: MongoDB connection failed ->', err));
-
-// Routes
-const bfhlRouter = express.Router();
-
-/**
- * Generates the MongoDB Aggregation expression for the priority score.
- * Formula: (importance * 10) + (100 / max(daysUntilDue, 1))
- * 
- * We use $floor to count full days and $max to prevent division by zero.
- */
-const getPriorityScoreAggregation = () => {
+// Helper for priority score calculation
+const calculatePriority = (task) => {
+  if (task.status === 'completed') return 0;
   const now = new Date();
-  return {
-    $cond: {
-      if: { $eq: ["$status", "completed"] },
-      then: 0, // Completed tasks naturally lose priority
-      else: {
-        $add: [
-          { $multiply: ["$importance", 10] },
-          {
-            $divide: [
-              100,
-              {
-                $max: [
-                  {
-                    $floor: {
-                      $divide: [
-                        { $subtract: ["$dueDate", now] },
-                        1000 * 60 * 60 * 24 // Convert ms difference to days
-                      ]
-                    }
-                  },
-                  1 // Minimum 1 day to handle same-day or overdue logic safely
-                ]
-              }
-            ]
-          }
-        ]
-      }
-    }
-  };
+  const due = new Date(task.due_date);
+  const diffDays = Math.floor((due - now) / (1000 * 60 * 60 * 24));
+  const daysUntilDue = Math.max(diffDays, 1);
+  return parseFloat(((task.importance * 10) + (100 / daysUntilDue)).toFixed(2));
 };
 
-// 1. POST /bfhl/tasks - Create a new task
+const bfhlRouter = express.Router();
+
+// 1. POST /tasks - Create task
 bfhlRouter.post('/tasks', async (req, res) => {
-  try {
-    const { title, description, importance, dueDate } = req.body;
-    
-    // Basic validation for dates
-    if (new Date(dueDate) <= new Date()) {
-      return res.status(400).json({ error: 'Due date must be in the future' });
-    }
+  const { title, description, importance, dueDate } = req.body;
+  const { data, error } = await supabase
+    .from('tasks')
+    .insert([{ title, description, importance, due_date: dueDate }])
+    .select();
 
-    const task = new Task({
-      title,
-      description,
-      importance,
-      dueDate
-    });
-
-    await task.save();
-    res.status(201).json(task);
-  } catch (error) {
-    if (error.name === 'ValidationError') {
-      const messages = Object.values(error.errors).map(val => val.message);
-      return res.status(400).json({ error: messages.join(', ') });
-    }
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ ...data[0], _id: data[0].id, dueDate: data[0].due_date });
 });
 
-// 2. GET /bfhl/tasks - List all tasks sorted by priorityScore DESC
+// 2. GET /tasks - List tasks with priority sorting
 bfhlRouter.get('/tasks', async (req, res) => {
-  try {
-    const { status, minImportance } = req.query;
-    
-    const pipeline = [];
+  const { status, minImportance } = req.query;
+  let query = supabase.from('tasks').select('*');
+  
+  if (status && status !== 'all') query = query.eq('status', status);
+  if (minImportance) query = query.gte('importance', parseInt(minImportance));
 
-    // Match filters
-    const match = {};
-    if (status) match.status = status;
-    if (minImportance) match.importance = { $gte: parseInt(minImportance) };
-    
-    if (Object.keys(match).length > 0) {
-      pipeline.push({ $match: match });
-    }
+  const { data, error } = await supabase.from('tasks').select('*');
+  if (error) return res.status(500).json({ error: error.message });
 
-    // Add priorityScore field
-    pipeline.push({
-      $addFields: {
-        priorityScore: { $round: [getPriorityScoreAggregation(), 2] }
-      }
-    });
+  // Map and sort in memory for the priority score logic
+  const tasksWithScores = data.map(t => ({
+    ...t,
+    _id: t.id,
+    dueDate: t.due_date,
+    priorityScore: calculatePriority(t)
+  })).sort((a, b) => b.priorityScore - a.priorityScore);
 
-    // Sort by priorityScore DESC
-    pipeline.push({ $sort: { priorityScore: -1 } });
-
-    const tasks = await Task.aggregate(pipeline);
-    res.json(tasks);
-  } catch (error) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  res.json(tasksWithScores);
 });
 
-// 3. PATCH /bfhl/tasks/:id - Update a task
+// 3. PATCH /tasks/:id - Update status
 bfhlRouter.patch('/tasks/:id', async (req, res) => {
-  try {
-    const updates = req.body;
-    const task = await Task.findById(req.params.id);
-
-    if (!task) {
-      return res.status(404).json({ error: 'Task not found' });
-    }
-
-    // Update fields
-    Object.keys(updates).forEach(key => {
-      task[key] = updates[key];
-    });
-
-    await task.save();
-    res.json(task);
-  } catch (error) {
-    if (error.name === 'ValidationError') {
-      const messages = Object.values(error.errors).map(val => val.message);
-      return res.status(400).json({ error: messages.join(', ') });
-    }
-    res.status(500).json({ error: 'Internal server error' });
+  const { id } = req.params;
+  const updates = req.body;
+  
+  // Map camelCase to snake_case if necessary
+  if (updates.dueDate) {
+    updates.due_date = updates.dueDate;
+    delete updates.dueDate;
   }
+
+  const { data, error } = await supabase
+    .from('tasks')
+    .update(updates)
+    .eq('id', id)
+    .select();
+
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ ...data[0], _id: data[0].id, dueDate: data[0].due_date });
 });
 
-// 4. DELETE /bfhl/tasks/:id - Delete a task
+// 4. DELETE /tasks/:id
 bfhlRouter.delete('/tasks/:id', async (req, res) => {
-  try {
-    const task = await Task.findByIdAndDelete(req.params.id);
-    if (!task) {
-      return res.status(404).json({ error: 'Task not found' });
-    }
-    res.json({ message: 'Task deleted successfully' });
-  } catch (error) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const { error } = await supabase.from('tasks').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ message: 'Deleted' });
 });
 
-// 5. GET /bfhl/tasks/stats (Bonus)
+// 5. GET /tasks/stats
 bfhlRouter.get('/tasks/stats', async (req, res) => {
-  try {
-    const now = new Date();
-    const stats = await Task.aggregate([
-      {
-        $facet: {
-          basicStats: [
-            {
-              $group: {
-                _id: null,
-                totalTasks: { $sum: 1 },
-                pendingTasks: {
-                  $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] }
-                },
-                completedTasks: {
-                  $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] }
-                },
-                averageImportance: { $avg: "$importance" }
-              }
-            }
-          ],
-          overdueTasks: [
-            {
-              $match: {
-                status: "pending",
-                dueDate: { $lt: now }
-              }
-            },
-            { $count: "count" }
-          ],
-          importanceGroups: [
-            {
-              $group: {
-                _id: "$importance",
-                count: { $sum: 1 }
-              }
-            },
-            { $sort: { _id: 1 } }
-          ]
-        }
-      },
-      {
-        $project: {
-          totalTasks: { $ifNull: [{ $arrayElemAt: ["$basicStats.totalTasks", 0] }, 0] },
-          pendingTasks: { $ifNull: [{ $arrayElemAt: ["$basicStats.pendingTasks", 0] }, 0] },
-          completedTasks: { $ifNull: [{ $arrayElemAt: ["$basicStats.completedTasks", 0] }, 0] },
-          averageImportance: { $round: [{ $ifNull: [{ $arrayElemAt: ["$basicStats.averageImportance", 0] }, 0] }, 2] },
-          overdueTasks: { $ifNull: [{ $arrayElemAt: ["$overdueTasks.count", 0] }, 0] },
-          tasksByImportance: {
-            $arrayToObject: {
-              $map: {
-                input: "$importanceGroups",
-                as: "ig",
-                in: {
-                  k: { $toString: "$$ig._id" },
-                  v: "$$ig.count"
-                }
-              }
-            }
-          }
-        }
-      }
-    ]);
+  const { data, error } = await supabase.from('tasks').select('*');
+  if (error) return res.status(500).json({ error: error.message });
 
-    res.json(stats[0] || {
-      totalTasks: 0,
-      pendingTasks: 0,
-      completedTasks: 0,
-      averageImportance: 0,
-      overdueTasks: 0,
-      tasksByImportance: {}
-    });
-  } catch (error) {
-    console.error('Stats error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const total = data.length;
+  const pending = data.filter(t => t.status === 'pending').length;
+  const completed = total - pending;
+  const avgImp = total ? (data.reduce((acc, curr) => acc + curr.importance, 0) / total) : 0;
+  const overdue = data.filter(t => t.status === 'pending' && new Date(t.due_date) < new Date()).length;
+
+  res.json({
+    totalTasks: total,
+    pendingTasks: pending,
+    completedTasks: completed,
+    averageImportance: parseFloat(avgImp.toFixed(2)),
+    overdueTasks: overdue
+  });
 });
-
-const serverless = require('serverless-http');
 
 app.use('/bfhl', bfhlRouter);
 
-// Local development entry point
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-}
-
-// Netlify Functions entry point
+const serverless = require('serverless-http');
 module.exports.handler = serverless(app);
+
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
