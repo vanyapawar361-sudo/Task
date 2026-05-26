@@ -1,6 +1,7 @@
 [build]
-  publish = "public"
-  functions = "functions"
+  command = "npm install --prefix backend && npm install --prefix frontend && npm run build --prefix frontend"
+  publish = "frontend/dist"
+  functions = "backend/functions"
 
 [functions]
   node_bundler = "esbuild"
